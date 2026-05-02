@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/olivierpoupier/patch/serialterm"
 	"github.com/olivierpoupier/patch/tui"
@@ -145,6 +146,8 @@ func (m *Model) Update(msg tea.Msg) (tui.DeviceView, tea.Cmd) {
 		return m.handleCommandResult(msg)
 	case commandTimeoutMsg:
 		return m, m.runner.timeout(msg)
+	case followUpMsg:
+		return m.handleFollowUp(msg)
 	case tea.KeyPressMsg:
 		return m.handleKeyPress(msg)
 	}
@@ -217,7 +220,30 @@ func (m *Model) handleCommandResult(msg commandResultMsg) (tui.DeviceView, tea.C
 	} else {
 		m.detailContent = cmd.Format(msg.Raw, m.theme.Terminal)
 	}
+	if cmd != nil && cmd.FollowUp != "" && cmd.FollowUpDelay > 0 {
+		return m, scheduleFollowUp(cmd.FollowUp, cmd.FollowUpDelay)
+	}
 	return m, nil
+}
+
+// followUpMsg fires after a FlipperCommand with FollowUpDelay > 0 has had its
+// primary response captured. The follow-up is sent fire-and-forget; any
+// response from the device lands in the scrollback for terminal mode.
+type followUpMsg struct {
+	cmd string
+}
+
+func scheduleFollowUp(cmd string, delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return followUpMsg{cmd: cmd}
+	})
+}
+
+func (m *Model) handleFollowUp(msg followUpMsg) (tui.DeviceView, tea.Cmd) {
+	if !m.session.Active() || m.disconnected {
+		return m, nil
+	}
+	return m, m.session.Send([]byte(msg.cmd + "\r\n"))
 }
 
 func (m *Model) handleKeyPress(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {

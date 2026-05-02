@@ -3,6 +3,7 @@ package flipper
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/olivierpoupier/patch/tui"
 )
@@ -11,12 +12,18 @@ import (
 // the underlying CLI command sent to the device, and how to present the
 // response in the detail pane.
 type FlipperCommand struct {
-	ID      string                                       // stable identifier, used in result messages
-	Label   string                                       // menu label
-	Group   string                                       // menu section header
-	Cmd     string                                       // raw Flipper CLI command (no trailing CR/LF)
-	Confirm bool                                         // require y/N confirmation before sending
+	ID      string                                        // stable identifier, used in result messages
+	Label   string                                        // menu label
+	Group   string                                        // menu section header
+	Cmd     string                                        // raw Flipper CLI command (no trailing CR/LF)
+	Confirm bool                                          // require y/N confirmation before sending
 	Format  func(raw []byte, t *tui.TerminalTheme) string // detail-pane renderer
+
+	// FollowUp is a second CLI command issued FollowUpDelay after the first
+	// one's response arrives. Used for "pulse" patterns like vibro on→off.
+	// Both fields must be set for the follow-up to fire.
+	FollowUp      string
+	FollowUpDelay time.Duration
 }
 
 // flipperCommands returns the menu registry. Order is preserved as menu
@@ -39,6 +46,7 @@ func flipperCommands() []FlipperCommand {
 		},
 	}
 	cmds = append(cmds, systemCommands()...)
+	cmds = append(cmds, hardwareCommands()...)
 	return cmds
 }
 

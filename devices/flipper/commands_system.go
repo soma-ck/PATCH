@@ -160,15 +160,21 @@ func formatFree(raw []byte, t *tui.TerminalTheme) string {
 	return renderLabeledRows(t, rows)
 }
 
+// rawLines runs raw bytes through a Scrollback to strip ANSI cursor and
+// erase escapes, returning clean lines including the echoed command and any
+// trailing prompt. Callers typically follow with trimEchoAndPrompt.
+func rawLines(raw []byte) []string {
+	sb := serialterm.NewScrollback(0)
+	sb.Write(raw)
+	return sb.Lines()
+}
+
 // formatRawText runs the raw bytes through a Scrollback to strip ANSI cursor
 // movements and erase escapes, drops the echoed command line and the trailing
 // prompt, and renders the rest as-is. Used for commands that emit free-form
 // output we don't yet have a structured parser for.
 func formatRawText(raw []byte, t *tui.TerminalTheme) string {
-	sb := serialterm.NewScrollback(0)
-	sb.Write(raw)
-	lines := sb.Lines()
-	lines = trimEchoAndPrompt(lines)
+	lines := trimEchoAndPrompt(rawLines(raw))
 	if len(lines) == 0 {
 		return t.Dim.Render("  (no output)")
 	}
