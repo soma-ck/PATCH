@@ -19,10 +19,10 @@ type FlipperCommand struct {
 	Format  func(raw []byte, t *tui.TerminalTheme) string // detail-pane renderer
 }
 
-// flipperCommands returns the v1 menu registry. Order is preserved as menu
+// flipperCommands returns the menu registry. Order is preserved as menu
 // order; grouping is rendered as section headers in the menu component.
 func flipperCommands() []FlipperCommand {
-	return []FlipperCommand{
+	cmds := []FlipperCommand{
 		{
 			ID:     "device_info",
 			Label:  "Device info",
@@ -38,6 +38,8 @@ func flipperCommands() []FlipperCommand {
 			Format: formatKVResponse(powerFieldOrder, powerLabels),
 		},
 	}
+	cmds = append(cmds, systemCommands()...)
+	return cmds
 }
 
 // findCommand returns the command with the given id, or nil.
