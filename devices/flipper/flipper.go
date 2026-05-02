@@ -63,6 +63,13 @@ type Model struct {
 
 	headerFields map[string]string
 
+	// terminalInput is the bytes the user has typed since the last Enter, used
+	// to power live command suggestions in terminal mode. It tracks user
+	// keystrokes only — not bytes the device echoes back — so it stays a
+	// reliable picture of "what's on the current line" without depending on
+	// the scrollback emulator's cursor model.
+	terminalInput string
+
 	err          error
 	disconnected bool
 
@@ -108,6 +115,7 @@ func (m *Model) Open(info tui.SerialDeviceInfo) tea.Cmd {
 	m.mode = modeMenu
 	m.menu = m.menu.SetItems(menuItems())
 	m.gpio = newGPIOModel()
+	m.terminalInput = ""
 	m.err = nil
 	m.disconnected = false
 	return serialterm.OpenSerialSession(m.device.PortPath, m.device.Baud)
@@ -299,15 +307,19 @@ func (m *Model) handleMenuKey(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {
 }
 
 func (m *Model) handleTerminalKey(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {
-	switch k.String() {
+	keyStr := k.String()
+	switch keyStr {
 	case "esc":
 		return m, func() tea.Msg { return tui.CloseDeviceMsg{} }
 	case "ctrl+l":
 		m.scrollback.Clear()
+		m.terminalInput = ""
 		if m.session.Active() && !m.disconnected && !m.runner.busy() {
 			return m, m.session.Send([]byte("\r"))
 		}
 		return m, nil
+	case "tab":
+		return m.handleTerminalTab()
 	}
 	if !m.session.Active() || m.disconnected {
 		return m, nil
@@ -316,7 +328,66 @@ func (m *Model) handleTerminalKey(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {
 	if len(data) == 0 {
 		return m, nil
 	}
+	m.updateTerminalInput(data, keyStr)
 	return m, m.session.Send(data)
+}
+
+// updateTerminalInput keeps Model.terminalInput in sync with what the user
+// has typed since the last Enter, so the suggestions popup reflects the
+// live state of the line. We only track printable single-byte writes plus a
+// few line-editing keys that the firmware also recognises; anything more
+// exotic (cursor moves, ctrl+a/e, etc.) just causes our local buffer to
+// drift, which is fine — the user can press Enter to resync.
+func (m *Model) updateTerminalInput(data []byte, keyStr string) {
+	switch keyStr {
+	case "enter":
+		m.terminalInput = ""
+		return
+	case "backspace":
+		if len(m.terminalInput) > 0 {
+			m.terminalInput = m.terminalInput[:len(m.terminalInput)-1]
+		}
+		return
+	case "ctrl+u":
+		m.terminalInput = ""
+		return
+	case "ctrl+w":
+		m.terminalInput = trimLastWord(m.terminalInput)
+		return
+	}
+	if len(data) == 1 && data[0] >= 0x20 && data[0] < 0x7f {
+		m.terminalInput += string(data[0])
+	}
+}
+
+// handleTerminalTab implements client-side Tab completion: if the typed
+// prefix matches known commands, advance the line as far as the common
+// prefix of the matches goes. When there's no local match we fall through
+// to the device so the firmware's own tab handler runs.
+func (m *Model) handleTerminalTab() (tui.DeviceView, tea.Cmd) {
+	matches := commandSuggestions(m.terminalInput)
+	if len(matches) == 0 {
+		// No client-side match — let the device handle tab.
+		if !m.session.Active() || m.disconnected {
+			return m, nil
+		}
+		return m, m.session.Send([]byte{'\t'})
+	}
+	target := matches[0]
+	if len(matches) > 1 {
+		target = commonPrefix(matches)
+	}
+	suffix := strings.TrimPrefix(target, m.terminalInput)
+	if suffix == "" {
+		// Already at the longest unambiguous prefix; nothing to insert.
+		// Future: cycle through matches on repeated tabs.
+		return m, nil
+	}
+	m.terminalInput = target
+	if !m.session.Active() || m.disconnected {
+		return m, nil
+	}
+	return m, m.session.Send([]byte(suffix))
 }
 
 func (m *Model) handleDetailKey(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {
@@ -354,8 +425,14 @@ func (m *Model) handleDetailKey(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {
 func (m *Model) toggleTerminal() (tui.DeviceView, tea.Cmd) {
 	if m.mode == modeTerminal {
 		m.mode = modeMenu
-	} else {
-		m.mode = modeTerminal
+		return m, nil
+	}
+	m.mode = modeTerminal
+	// Elicit a fresh prompt so the user lands on a usable shell instead of
+	// having to press Enter to wake it up. Skip if the runner is mid-command
+	// — that already owns the line and a stray \r would corrupt it.
+	if m.session.Active() && !m.disconnected && !m.runner.busy() {
+		return m, m.session.Send([]byte("\r"))
 	}
 	return m, nil
 }
@@ -630,9 +707,9 @@ func (m *Model) renderFooter(_ int) string {
 		bindings = []components.KeyBinding{
 			{Keys: "esc", Description: "close"},
 			{Keys: "ctrl+l", Description: "clear"},
+			{Keys: "tab", Description: "complete"},
 			{Keys: "ctrl+t", Description: "menu"},
 			{Keys: "ctrl+r", Description: "refresh"},
-			{Keys: "keys", Description: "→ device"},
 		}
 	case modeDetail:
 		bindings = []components.KeyBinding{
@@ -651,7 +728,13 @@ func (m *Model) renderFooter(_ int) string {
 	for _, b := range bindings {
 		parts = append(parts, b.Keys+" "+b.Description)
 	}
-	return m.theme.Terminal.Help.Render("  " + strings.Join(parts, "  "))
+	hints := m.theme.Terminal.Help.Render("  " + strings.Join(parts, "  "))
+	if m.mode == modeTerminal {
+		if popup := renderSuggestionsPopup(m.terminalInput, m.theme.Terminal); popup != "" {
+			return popup + "\n" + hints
+		}
+	}
+	return hints
 }
 
 // prettyLabel maps Flipper parsed keys to display labels. Unknown keys are
