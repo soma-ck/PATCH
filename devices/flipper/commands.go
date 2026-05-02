@@ -47,6 +47,7 @@ func flipperCommands() []FlipperCommand {
 	}
 	cmds = append(cmds, systemCommands()...)
 	cmds = append(cmds, hardwareCommands()...)
+	cmds = append(cmds, subsystemCommands()...)
 	return cmds
 }
 

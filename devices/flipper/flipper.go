@@ -324,10 +324,22 @@ func (m *Model) handleDetailKey(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {
 	case "esc":
 		// Back to menu; clear the detail pane so a stale result doesn't
 		// surface if the user opens a different command later.
+		hadRunning := m.detailRunning
 		m.mode = modeMenu
 		m.detailContent = ""
 		m.detailErr = nil
 		m.detailCmdID = ""
+		// If the runner was still in flight when the user backed out, the
+		// device may be stuck inside an interactive plugin (e.g. subghz/nfc/ir
+		// don't return to the main shell without ETX). Send ETX defensively
+		// so the next command runs cleanly. Also reset the runner so a stale
+		// result doesn't leak into a future command.
+		if hadRunning && m.runner.busy() {
+			m.runner.reset()
+			if m.session.Active() && !m.disconnected {
+				return m, m.session.Send([]byte{0x03})
+			}
+		}
 		return m, nil
 	case "up", "k":
 		m.scroll = m.scroll.SetYOffset(m.scroll.YOffset() - 1)

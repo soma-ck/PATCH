@@ -113,7 +113,11 @@ func (r *commandRunner) reset() {
 type errCommandTimeout struct{ cmd string }
 
 func (e errCommandTimeout) Error() string {
-	return "command \"" + e.cmd + "\" timed out waiting for prompt"
+	// The most common cause is the device entered an interactive plugin
+	// (subghz/nfc/ir) instead of returning a prompt. Hint at the recovery
+	// path so users aren't left guessing.
+	return "no prompt received within " + runnerTimeout.String() +
+		" — device may be in an interactive subsystem; press esc to return to menu (ETX will be sent to recover)"
 }
 
 // promptMarkers lists every byte sequence the Flipper emits as a prompt
