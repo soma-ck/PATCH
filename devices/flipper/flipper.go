@@ -27,6 +27,7 @@ const (
 	modeMenu viewMode = iota
 	modeTerminal
 	modeDetail
+	modeGPIO
 )
 
 // Model is the Flipper Zero device view. It composes a serialterm.Session for
@@ -44,6 +45,7 @@ type Model struct {
 
 	mode viewMode
 	menu components.MenuList
+	gpio gpioModel
 
 	runner commandRunner
 	// headerCaptureQueue holds the remaining raw CLI commands to run for
@@ -77,7 +79,8 @@ func New(theme *tui.Theme) *Model {
 		headerFields: make(map[string]string),
 		mode:         modeMenu,
 	}
-	m.menu = components.NewMenuList(theme.Terminal, menuItemsFromCommands(flipperCommands()))
+	m.menu = components.NewMenuList(theme.Terminal, menuItems())
+	m.gpio = newGPIOModel()
 	return m
 }
 
@@ -103,7 +106,8 @@ func (m *Model) Open(info tui.SerialDeviceInfo) tea.Cmd {
 	m.detailErr = nil
 	m.detailRunning = false
 	m.mode = modeMenu
-	m.menu = m.menu.SetItems(menuItemsFromCommands(flipperCommands()))
+	m.menu = m.menu.SetItems(menuItems())
+	m.gpio = newGPIOModel()
 	m.err = nil
 	m.disconnected = false
 	return serialterm.OpenSerialSession(m.device.PortPath, m.device.Baud)
@@ -205,6 +209,9 @@ func (m *Model) handleCommandResult(msg commandResultMsg) (tui.DeviceView, tea.C
 		m.headerCaptureActive = false
 		return m, m.advanceHeaderCapture()
 	}
+	if m.applyGPIOReadResult(msg) {
+		return m, nil
+	}
 	if msg.ID != m.detailCmdID {
 		return m, nil
 	}
@@ -269,6 +276,8 @@ func (m *Model) handleKeyPress(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {
 		return m.handleTerminalKey(k)
 	case modeDetail:
 		return m.handleDetailKey(k)
+	case modeGPIO:
+		return m.handleGPIOKey(k)
 	}
 	return m, nil
 }
@@ -342,6 +351,10 @@ func (m *Model) toggleTerminal() (tui.DeviceView, tea.Cmd) {
 func (m *Model) runSelectedMenuCommand() (tui.DeviceView, tea.Cmd) {
 	sel := m.menu.Selected()
 	if sel == nil {
+		return m, nil
+	}
+	if sel.ID == gpioMenuID {
+		m.mode = modeGPIO
 		return m, nil
 	}
 	cmd := findCommand(sel.ID)
@@ -524,6 +537,8 @@ func (m *Model) renderBody(width int) string {
 		return m.renderTerminalBody()
 	case modeDetail:
 		return m.renderDetailBody()
+	case modeGPIO:
+		return m.renderGPIO(m.width - 1)
 	}
 	return ""
 }
@@ -612,6 +627,12 @@ func (m *Model) renderFooter(_ int) string {
 			{Keys: "↑↓", Description: "scroll"},
 			{Keys: "esc", Description: "back"},
 			{Keys: "ctrl+t", Description: "terminal"},
+		}
+	case modeGPIO:
+		bindings = []components.KeyBinding{
+			{Keys: "↑↓←→", Description: "navigate"},
+			{Keys: "enter/r", Description: "read"},
+			{Keys: "esc", Description: "back"},
 		}
 	}
 	var parts []string
