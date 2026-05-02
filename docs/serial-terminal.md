@@ -119,30 +119,41 @@ The `Transport` interface is the extension point. A hypothetical `OpenHID(vid, p
 
 ## 4. `Scrollback` (`scrollback.go`)
 
-`Scrollback` is a **line-mode ANSI sanitiser**, not a VT100 emulator. It has one job: turn a stream of bytes from the device into a list of lines you can hand to lipgloss without worrying about escape sequences breaking the layout.
+`Scrollback` is a **line-mode terminal**, not a full VT100 emulator. It models the in-progress line as a slice of cells indexed by visible column, with a cursor that moves over them, so devices that draw via cursor commands (Flipper Zero, Linux shells) render correctly without the parser becoming a full screen emulator.
 
 ### What it preserves
 
-- **SGR sequences** (`\e[...m`) — bold, colors, underline. These are inlined into the line so lipgloss renders them unchanged.
-- **SGR carry-forward** — if the device emits `\e[31mHello\nWorld`, the `Hello` line ends mid-red-color and the `World` line starts with the same SGR prepended (`scrollback.go:190`). This matches real-terminal behaviour where colors persist across newlines until an explicit reset.
+- **SGR sequences** (`\e[...m`) — bold, colors, underline. These are stored as transitions tied to specific cells, so colors render correctly even after mid-line overwrites (e.g., the cursor moves left and writes new bytes over old ones).
+- **SGR carry-forward** — if the device emits `\e[31mHello\nWorld`, the `Hello` line ends mid-red-color and the `World` line starts with the same SGR prepended on its first cell. This matches real-terminal behaviour where colors persist across newlines until an explicit reset.
+
+### Line-edit CSI sequences it honors
+
+These let CLI line editors (history scroll, mid-line backspace, cursor-arrow navigation) draw correctly:
+
+| Sequence | Name | Effect |
+|----------|------|--------|
+| `\e[<n>D` | CUB | Move cursor left by `n` (default 1) |
+| `\e[<n>C` | CUF | Move cursor right by `n` (default 1); writes past EOL pad with spaces |
+| `\e[<n>G` | CHA | Move cursor to column `n` (1-indexed); used by line-redraw on history navigation |
+| `\e[<n>K` | EL  | Erase in line: 0=cursor to end, 1=start to cursor (replace with spaces), 2=whole line |
 
 ### What it strips
 
-- **Every other CSI sequence** (cursor motion, erase, scroll, save/restore, alternate screens). These would otherwise corrupt the rendered frame — e.g., a `\e[2J` (clear screen) from the device would blank out the tab bar. The `feedCSI` dispatch at `scrollback.go:144-158` drops anything that isn't `m`.
-- **`ESC P`, `ESC ]`, `ESC X`, `ESC ^`, `ESC _`** — DCS / OSC / SOS / PM / APC introducers. These would normally require tracking until `ST`, but since we're not emulating, dropping the intro is safe enough for the devices we target (`scrollback.go:135-137`).
+- **All other CSI sequences** (CUP, CUU/CUD, scroll, save/restore, alternate screens, etc.) are consumed but discarded — they don't apply in a line-mode model and would corrupt the layout if forwarded.
+- **`ESC P`, `ESC ]`, `ESC X`, `ESC ^`, `ESC _`** — DCS / OSC / SOS / PM / APC introducers. These would normally require tracking until `ST`, but since we're not emulating, dropping the intro is safe enough for the devices we target.
 - **BEL** (`0x07`) — dropped silently.
 
-### What it handles as controls
+### What it handles as C0 controls
 
-| Byte | Action | Location |
-|------|--------|----------|
-| `\n` (LF) | Commit current line to history, start a fresh line with carried SGR | `scrollback.go:102` |
-| `\r` (CR) | Flag the next byte as a line reset | `scrollback.go:105-106` |
-| `\r\n` (CRLF) | Treated as a single LF (the pending-CR flag is swallowed at `scrollback.go:104`) | |
-| Standalone `\r` | Reset the current line to the carried SGR on the next byte | `scrollback.go:83-86` |
-| `\b` (BS) | Decrement visible column; drop the trailing byte if it's printable | `scrollback.go:107-116` |
-| `\t` (HT) | Write four spaces | `scrollback.go:117-120` |
-| `\x20`–`\x7e` | Append to current line, increment column | `scrollback.go:123-127` |
+| Byte | Action |
+|------|--------|
+| `\n` (LF) | Commit current line to history, start a fresh line with carried SGR |
+| `\r` (CR) | Flag the next byte as a line reset |
+| `\r\n` (CRLF) | Treated as a single LF (the pending-CR flag is swallowed) |
+| Standalone `\r` | Reset the current line to the carried SGR on the next byte |
+| `\b` (BS) | Cursor left; additionally drops the trailing cell if the cursor was at end-of-line (legacy destructive-backspace pattern) |
+| `\t` (HT) | Write four spaces |
+| `\x20`–`\x7e` | Write to the cell at the cursor (overwriting if mid-line), increment cursor |
 
 ### Ring-buffer capacity
 
