@@ -155,6 +155,13 @@ func (m *Model) handleCaptureEnd() (tui.DeviceView, tea.Cmd) {
 		}
 	}
 	m.captureBuf = m.captureBuf[:0]
+	// The Flipper printed its post-response prompt during the capture
+	// window, so it never reached the scrollback. Send a bare \r to elicit
+	// a fresh prompt now that RX flows to the user view, sparing them the
+	// "press enter to wake it up" gesture on every connect.
+	if m.session.Active() && !m.disconnected {
+		return m, m.session.Send([]byte("\r"))
+	}
 	return m, nil
 }
 
@@ -164,6 +171,9 @@ func (m *Model) handleKeyPress(k tea.KeyPressMsg) (tui.DeviceView, tea.Cmd) {
 		return m, func() tea.Msg { return tui.CloseDeviceMsg{} }
 	case "ctrl+l":
 		m.scrollback.Clear()
+		if m.session.Active() && !m.disconnected {
+			return m, m.session.Send([]byte("\r"))
+		}
 		return m, nil
 	case "ctrl+r":
 		return m, m.startHeaderCapture()
